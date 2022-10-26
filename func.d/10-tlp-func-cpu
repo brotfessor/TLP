@@ -13,6 +13,7 @@ readonly CPUD=/sys/devices/system/cpu
 readonly CPU_BOOST_ALL_CTRL=${CPUD}/cpufreq/boost
 readonly INTEL_PSTATED=${CPUD}/intel_pstate
 readonly AMD_PSTATED=/sys/module/amd_pstate
+readonly AMD_PSTATE_EPP=$AMD_PSTATED/parameters/epp
 readonly CPU_MIN_PERF_PCT=$INTEL_PSTATED/min_perf_pct
 readonly CPU_MAX_PERF_PCT=$INTEL_PSTATED/max_perf_pct
 readonly CPU_TURBO_PSTATE=$INTEL_PSTATED/no_turbo
@@ -36,8 +37,14 @@ check_intel_pstate () {
 
 check_amd_pstate () {
     # detect amd_pstate driver -- rc: 0=present/1=absent
-    # note: intel_pstate requires Linux 5.17 or higher
+    # note: amd_pstate requires Linux 5.17 or higher
     [ -d $AMD_PSTATED ]
+}
+
+check_amd_pstate_epp () {
+    # detect epp-enabled amd_pstate driver -- rc: 0=present/1=absent
+    # note: requires Linux 6.? or higher
+    check_amd_pstate && [ -e $AMD_PSTATE_EPP ] && [ "$(cat $AMD_PSTATE_EPP)" = "Y" ]
 }
 
 set_cpu_scaling_governor () {
@@ -130,8 +137,8 @@ supports_intel_cpu_epp () {
     grep -E -q -m 1 '^flags.+hwp_epp' $CPU_INFO
 }
 
-set_intel_cpu_perf_policy () {
-    # set Intel CPU energy vs. performance policies
+set_cpu_perf_policy () {
+    # set Intel/AMD CPU energy vs. performance policies
     # $1: 0=ac mode, 1=battery mode
     #
     # depending on the CPU model the values
@@ -146,6 +153,7 @@ set_intel_cpu_perf_policy () {
     # - https://www.kernel.org/doc/html/latest/admin-guide/pm/intel_epb.html
     # - https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=4beec1d7519691b4b6c6b764e75b4e694a09c5f7
     # - http://manpages.ubuntu.com/manpages/disco/man8/x86_energy_perf_policy.8.html
+    # - https://lore.kernel.org/lkml/20221009071033.21170-1-Perry.Yuan@amd.com/
 
     local cnt cpuf ec perf pnum
 
@@ -163,11 +171,11 @@ set_intel_cpu_perf_policy () {
     esac
 
     if [ -z "$perf" ]; then
-        echo_debug "pm" "set_intel_cpu_perf_policy($1).not_configured"
+        echo_debug "pm" "set_cpu_perf_policy($1).not_configured"
         return 0
     fi
 
-    if check_intel_pstate && supports_intel_cpu_epp; then
+    if check_intel_pstate && supports_intel_cpu_epp || check_amd_pstate_epp; then
         # validate HWP.EPP setting
         case "$perf" in
             performance|balance_performance|default|balance_power|power) # OK --> continue
@@ -177,7 +185,7 @@ set_intel_cpu_perf_policy () {
                 ;;
 
             *) # invalid setting
-                echo_debug "pm" "set_intel_cpu_perf_policy($1).hwp_epp.invalid: perf=$perf"
+                echo_debug "pm" "set_cpu_perf_policy($1).hwp_epp.invalid: perf=$perf"
                 return 0
                 ;;
         esac
@@ -189,20 +197,20 @@ set_intel_cpu_perf_policy () {
             if [ -f "$cpuf" ]; then
                 cnt=$((cnt+1))
                 if  ! write_sysf "$perf" "$cpuf"; then
-                    echo_debug "pm" "set_intel_cpu_perf_policy($1).hwp_epp.write_error: $perf $cpuf; rc=$?"
+                    echo_debug "pm" "set_cpu_perf_policy($1).hwp_epp.write_error: $perf $cpuf; rc=$?"
                     ec=$((ec+1))
                 fi
             fi
         done
         if [ $cnt -gt 0 ]; then
-            echo_debug "pm" "set_intel_cpu_perf_policy($1).hwp_epp: $perf; ec=$ec"
+            echo_debug "pm" "set_cpu_perf_policy($1).hwp_epp: $perf; ec=$ec"
             # HWP.EPP active and applied, quit unless EPB is forced
             [ "$X_FORCE_EPB" = "1" ] || return 0
         else
-            echo_debug "pm" "set_intel_cpu_perf_policy($1).hwp_epp.not_available"
+            echo_debug "pm" "set_cpu_perf_policy($1).hwp_epp.not_available"
         fi
     else
-        echo_debug "pm" "set_intel_cpu_perf_policy($1).hwp_epp.unsupported_cpu"
+        echo_debug "pm" "set_cpu_perf_policy($1).hwp_epp.unsupported_cpu"
     fi
 
     if supports_intel_cpu_epb; then
